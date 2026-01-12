@@ -1,0 +1,586 @@
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mechanical Legend Symbol Detector</title>
+<style>
+body {
+margin: 0;
+padding: 20px;
+font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+min-height: 100vh;
+}
+
+.container {
+max-width: 1400px;
+margin: 0 auto;
+background: white;
+border-radius: 16px;
+box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+overflow: hidden;
+}
+
+.header {
+background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+color: white;
+padding: 30px;
+text-align: center;
+}
+
+.header h1 {
+margin: 0 0 10px 0;
+font-size: 28px;
+font-weight: 600;
+}
+
+.header p {
+margin: 0;
+opacity: 0.9;
+font-size: 14px;
+}
+
+.content {
+padding: 30px;
+}
+
+.upload-section {
+background: #f8f9fa;
+border: 2px dashed #dee2e6;
+border-radius: 12px;
+padding: 40px;
+text-align: center;
+margin-bottom: 30px;
+transition: all 0.3s ease;
+}
+
+.upload-section:hover {
+border-color: #667eea;
+background: #f0f1ff;
+}
+
+.upload-section input[type="file"] {
+display: none;
+}
+
+.upload-btn {
+background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+color: white;
+padding: 12px 32px;
+border-radius: 8px;
+border: none;
+font-size: 16px;
+font-weight: 600;
+cursor: pointer;
+transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.upload-btn:hover {
+transform: translateY(-2px);
+box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+}
+
+.upload-btn:active {
+transform: translateY(0);
+}
+
+.controls {
+display: flex;
+gap: 15px;
+margin-bottom: 20px;
+flex-wrap: wrap;
+}
+
+.control-group {
+flex: 1;
+min-width: 200px;
+}
+
+.control-group label {
+display: block;
+margin-bottom: 8px;
+font-weight: 600;
+color: #495057;
+font-size: 14px;
+}
+
+.control-group input,
+.control-group select {
+width: 100%;
+padding: 10px;
+border: 2px solid #e9ecef;
+border-radius: 8px;
+font-size: 14px;
+transition: border-color 0.3s ease;
+}
+
+.control-group input:focus,
+.control-group select:focus {
+outline: none;
+border-color: #667eea;
+}
+
+.btn {
+padding: 12px 24px;
+border-radius: 8px;
+border: none;
+font-size: 14px;
+font-weight: 600;
+cursor: pointer;
+transition: all 0.2s ease;
+}
+
+.btn-primary {
+background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+color: white;
+}
+
+.btn-primary:hover {
+transform: translateY(-2px);
+box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+}
+
+.btn-secondary {
+background: #6c757d;
+color: white;
+}
+
+.btn-secondary:hover {
+background: #5a6268;
+}
+
+.btn:disabled {
+opacity: 0.5;
+cursor: not-allowed;
+}
+
+.preview-section {
+background: #f8f9fa;
+border-radius: 12px;
+padding: 20px;
+margin-top: 20px;
+}
+
+.preview-section h3 {
+margin-top: 0;
+color: #495057;
+font-size: 18px;
+}
+
+.canvas-container {
+background: white;
+border-radius: 8px;
+overflow: auto;
+max-height: 600px;
+box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+canvas {
+display: block;
+max-width: 100%;
+height: auto;
+}
+
+.status {
+padding: 15px;
+border-radius: 8px;
+margin-bottom: 20px;
+font-size: 14px;
+}
+
+.status.info {
+background: #d1ecf1;
+color: #0c5460;
+border-left: 4px solid #17a2b8;
+}
+
+.status.success {
+background: #d4edda;
+color: #155724;
+border-left: 4px solid #28a745;
+}
+
+.status.error {
+background: #f8d7da;
+color: #721c24;
+border-left: 4px solid #dc3545;
+}
+
+.legend-list {
+display: grid;
+grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+gap: 10px;
+margin-top: 20px;
+}
+
+.legend-item {
+background: white;
+padding: 12px;
+border-radius: 8px;
+border: 1px solid #e9ecef;
+font-size: 13px;
+}
+
+.legend-item strong {
+color: #667eea;
+}
+
+.progress {
+width: 100%;
+height: 6px;
+background: #e9ecef;
+border-radius: 3px;
+overflow: hidden;
+margin-top: 10px;
+}
+
+.progress-bar {
+height: 100%;
+background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+transition: width 0.3s ease;
+}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1>🔧 Mechanical Legend Symbol Detector</h1>
+<p>Detect and highlight symbols from mechanical drawings</p>
+</div>
+
+<div class="content">
+<div class="upload-section">
+<p style="margin-bottom: 20px; color: #6c757d;">Upload your mechanical drawing PDF to detect legend symbols</p>
+<input type="file" id="pdfInput" accept=".pdf" onchange="handleFileUpload(event)">
+<button class="upload-btn" onclick="document.getElementById('pdfInput').click()">
+📁 Choose PDF File
+</button>
+<p style="margin-top: 15px; font-size: 13px; color: #6c757d;">Maximum file size: 50MB</p>
+</div>
+
+<div id="statusMessage"></div>
+
+<div class="controls" id="controls" style="display: none;">
+<div class="control-group">
+<label for="pageSelect">Page Number</label>
+<select id="pageSelect" onchange="renderPage()">
+<option value="1">Page 1 - Legend & Abbreviations</option>
+</select>
+</div>
+<div class="control-group">
+<label for="highlightColor">Highlight Color</label>
+<input type="color" id="highlightColor" value="#ffff00">
+</div>
+<div class="control-group">
+<label for="detectionMode">Detection Mode</label>
+<select id="detectionMode">
+<option value="symbols">Symbols Only</option>
+<option value="text">Text & Abbreviations</option>
+<option value="both">Both</option>
+</select>
+</div>
+<div style="display: flex; gap: 10px; align-items: flex-end;">
+<button class="btn btn-primary" onclick="detectAndHighlight()" id="detectBtn" disabled>
+🔍 Detect Symbols
+</button>
+<button class="btn btn-secondary" onclick="downloadPDF()" id="downloadBtn" disabled>
+⬇️ Download PDF
+</button>
+</div>
+</div>
+
+<div class="preview-section" id="previewSection" style="display: none;">
+<h3>📊 Preview & Detection Results</h3>
+<div id="detectionStats"></div>
+<div class="canvas-container">
+<canvas id="pdfCanvas"></canvas>
+</div>
+<div id="legendList" class="legend-list"></div>
+</div>
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<script>
+let pdfDoc = null;
+let pageNum = 1;
+let pageRendering = false;
+let pageNumPending = null;
+let canvas = document.getElementById('pdfCanvas');
+let ctx = canvas.getContext('2d');
+let detectedSymbols = [];
+
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// Mechanical legend symbols to detect
+const mechanicalSymbols = [
+'T-STAT', 'U.C.', 'D.L.', 'AC', 'CD', 'T', 'S.A.', 'R.A.', 'E.A.', 'O.A.',
+'A.D.', 'A.P.', 'UP', 'DN', 'SD', 'FD', 'SFD', 'ZD', 'P.O.D.'
+];
+
+const abbreviations = {
+'A.F.F.': 'ABOVE FINISH FLOOR',
+'B.H.P.': 'BRAKE HORSEPOWER',
+'B.T.U.H.': 'BRITISH THERMAL UNITS PER HOUR',
+'C.F.M.': 'CUBIC FEET PER MINUTE',
+'D.B.': 'DRY BULB',
+'DIA.': 'DIAMETER',
+'DN.': 'DOWN',
+'E.S.P.': 'EXTERNAL STATIC PRESSURE',
+'F.P.M.': 'FEET PER MINUTE',
+'H.P.': 'HORSEPOWER',
+'MECH.': 'MECHANICAL',
+'O.A.': 'OUTSIDE AIR',
+'R.A.': 'RETURN AIR',
+'S.A.': 'SUPPLY AIR',
+'T.S.P.': 'TOTAL STATIC PRESSURE'
+};
+
+function showStatus(message, type = 'info') {
+const statusDiv = document.getElementById('statusMessage');
+statusDiv.className = `status ${type}`;
+statusDiv.innerHTML = message;
+statusDiv.style.display = 'block';
+}
+
+function hideStatus() {
+document.getElementById('statusMessage').style.display = 'none';
+}
+
+async function handleFileUpload(event) {
+const file = event.target.files[0];
+if (!file) return;
+
+if (file.size > 50 * 1024 * 1024) {
+showStatus('❌ File size exceeds 50MB limit', 'error');
+return;
+}
+
+showStatus('📄 Loading PDF...', 'info');
+
+try {
+const arrayBuffer = await file.arrayBuffer();
+pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        
+showStatus(`✅ PDF loaded successfully (${pdfDoc.numPages} pages)`, 'success');
+        
+document.getElementById('controls').style.display = 'flex';
+document.getElementById('previewSection').style.display = 'block';
+document.getElementById('detectBtn').disabled = false;
+        
+// Update page selector
+const pageSelect = document.getElementById('pageSelect');
+pageSelect.innerHTML = '';
+for (let i = 1; i <= pdfDoc.numPages; i++) {
+const option = document.createElement('option');
+option.value = i;
+option.textContent = `Page ${i}${i === 1 ? ' - Legend & Abbreviations' : ''}`;
+pageSelect.appendChild(option);
+}
+        
+await renderPage();
+        
+} catch (error) {
+showStatus(`❌ Error loading PDF: ${error.message}`, 'error');
+console.error('Error loading PDF:', error);
+}
+}
+
+async function renderPage() {
+if (pageRendering) {
+pageNumPending = pageNum;
+return;
+}
+
+pageRendering = true;
+pageNum = parseInt(document.getElementById('pageSelect').value);
+
+try {
+const page = await pdfDoc.getPage(pageNum);
+const viewport = page.getViewport({ scale: 2.0 });
+        
+canvas.height = viewport.height;
+canvas.width = viewport.width;
+        
+const renderContext = {
+canvasContext: ctx,
+viewport: viewport
+};
+        
+await page.render(renderContext).promise;
+        
+pageRendering = false;
+        
+if (pageNumPending !== null) {
+renderPage();
+pageNumPending = null;
+}
+        
+} catch (error) {
+showStatus(`❌ Error rendering page: ${error.message}`, 'error');
+pageRendering = false;
+}
+}
+
+async function detectAndHighlight() {
+if (!pdfDoc) return;
+    
+showStatus('🔍 Detecting symbols...', 'info');
+document.getElementById('detectBtn').disabled = true;
+    
+try {
+const page = await pdfDoc.getPage(pageNum);
+const textContent = await page.getTextContent();
+const viewport = page.getViewport({ scale: 2.0 });
+        
+detectedSymbols = [];
+const highlightColor = document.getElementById('highlightColor').value;
+const detectionMode = document.getElementById('detectionMode').value;
+        
+ctx.fillStyle = highlightColor;
+ctx.globalAlpha = 0.3;
+        
+// Detect symbols and abbreviations
+textContent.items.forEach(item => {
+const text = item.str.trim();
+            
+if (detectionMode === 'symbols' || detectionMode === 'both') {
+if (mechanicalSymbols.some(symbol => text.includes(symbol))) {
+const transform = item.transform;
+const x = transform[4];
+const y = viewport.height - transform[5];
+const width = item.width * 2;
+const height = item.height * 2;
+                
+ctx.fillRect(x, y - height, width, height + 5);
+                
+detectedSymbols.push({
+type: 'symbol',
+text: text,
+x: x,
+y: y
+});
+}
+}
+            
+if (detectionMode === 'text' || detectionMode === 'both') {
+if (abbreviations[text]) {
+const transform = item.transform;
+const x = transform[4];
+const y = viewport.height - transform[5];
+const width = item.width * 2;
+const height = item.height * 2;
+                
+ctx.fillRect(x, y - height, width, height + 5);
+                
+detectedSymbols.push({
+type: 'abbreviation',
+text: text,
+definition: abbreviations[text],
+x: x,
+y: y
+});
+}
+}
+});
+        
+ctx.globalAlpha = 1.0;
+        
+displayDetectionResults();
+        
+showStatus(`✅ Detected ${detectedSymbols.length} symbols/abbreviations`, 'success');
+document.getElementById('detectBtn').disabled = false;
+document.getElementById('downloadBtn').disabled = false;
+        
+} catch (error) {
+showStatus(`❌ Error detecting symbols: ${error.message}`, 'error');
+document.getElementById('detectBtn').disabled = false;
+}
+}
+
+function displayDetectionResults() {
+const statsDiv = document.getElementById('detectionStats');
+const listDiv = document.getElementById('legendList');
+    
+const symbolCount = detectedSymbols.filter(s => s.type === 'symbol').length;
+const abbrCount = detectedSymbols.filter(s => s.type === 'abbreviation').length;
+    
+statsDiv.innerHTML = `
+<div class="status success">
+<strong>Detection Complete:</strong> Found ${symbolCount} symbols and ${abbrCount} abbreviations
+<div class="progress">
+<div class="progress-bar" style="width: 100%"></div>
+</div>
+</div>
+`;
+    
+listDiv.innerHTML = '<h4 style="margin-top: 20px; color: #495057;">Detected Items:</h4>';
+    
+detectedSymbols.forEach((item, index) => {
+const div = document.createElement('div');
+div.className = 'legend-item';
+        
+if (item.type === 'symbol') {
+div.innerHTML = `<strong>#${index + 1} Symbol:</strong> ${item.text}`;
+} else {
+div.innerHTML = `<strong>#${index + 1} Abbreviation:</strong> ${item.text}<br><small>${item.definition}</small>`;
+}
+        
+listDiv.appendChild(div);
+});
+}
+
+async function downloadPDF() {
+if (!pdfDoc || detectedSymbols.length === 0) return;
+    
+showStatus('📥 Generating PDF with highlights...', 'info');
+    
+try {
+const { jsPDF } = window.jspdf;
+const pdf = new jsPDF({
+orientation: 'landscape',
+unit: 'px',
+format: [canvas.width, canvas.height]
+});
+        
+// Add the canvas as an image
+const imgData = canvas.toDataURL('image/png');
+pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        
+// Add a summary page
+pdf.addPage();
+pdf.setFontSize(20);
+pdf.text('Symbol Detection Summary', 20, 30);
+        
+pdf.setFontSize(12);
+let yPos = 60;
+        
+detectedSymbols.forEach((item, index) => {
+if (yPos > 550) {
+pdf.addPage();
+yPos = 30;
+}
+            
+if (item.type === 'symbol') {
+pdf.text(`${index + 1}. Symbol: ${item.text}`, 20, yPos);
+} else {
+pdf.text(`${index + 1}. ${item.text}: ${item.definition}`, 20, yPos);
+}
+            
+yPos += 20;
+});
+        
+pdf.save('mechanical-legend-highlighted.pdf');
+        
+showStatus('✅ PDF downloaded successfully!', 'success');
+        
+} catch (error) {
+showStatus(`❌ Error generating PDF: ${error.message}`, 'error');
+}
+}
+</script>
+</body>
+</html>

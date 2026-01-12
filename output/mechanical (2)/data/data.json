@@ -1,0 +1,13 @@
+{
+  "tags": [],
+  "found_tags": [],
+  "missing_tags": [],
+  "plan_tag_counts": {},
+  "symbol_counts": {
+    "UNCLASSIFIED SYMBOL": 3781,
+    "DUCT (VERTICAL)": 51,
+    "DUCT (HORIZONTAL)": 120,
+    "DAMPER": 150,
+    "DIFFUSER / GRILLE": 620
+  }
+}
