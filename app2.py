@@ -1,144 +1,139 @@
-import io
-import os
-import cv2
-import numpy as np
 import streamlit as st
-import fitz
+import pytesseract
+from pytesseract import Output
 from pdf2image import convert_from_bytes
-from PIL import Image
+import fitz  # PyMuPDF
+import pandas as pd
+import io
+import re
 
+# --- CONFIGURATION ---
+# 1. Update this to your Poppler bin path
+POPPLER_BIN_PATH = r"C:/poppler-25.12.0/Library/bin" 
 
-# ================= CONFIG =================
-
-OUTPUT_ROOT = "output"
-MATCH_THRESHOLD = 0.75  # lower = more tolerant
-
-
-# ================= FILE SYSTEM =================
-
-def make_output_dirs(project):
-    base = os.path.join(OUTPUT_ROOT, project)
-    os.makedirs(base, exist_ok=True)
-    return base
-
-
-# ================= LEGEND DETECTION =================
-
-def find_legend_page(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    for i, page in enumerate(doc):
-        text = (page.get_text() or "").upper()
-        if "LEGEND" in text and "SYMBOL" in text:
-            doc.close()
-            return i
-    doc.close()
-    return None
-
-
-# ================= SYMBOL CROPPING =================
-
-def extract_legend_symbol_images(legend_img: Image.Image):
+def ocr_and_mark(pdf_file):
     """
-    Very robust for tabular legends like yours.
+    1. Converts PDF to Images.
+    2. OCRs the text.
+    3. Draws a VISIBLE RED BOX annotation on top of the PDF.
     """
-    w, h = legend_img.size
-
-    # Left column where symbols are (based on your PDF)
-    symbol_col = legend_img.crop((0, int(0.15*h), int(0.25*w), h))
-
-    symbols = []
-    row_h = 80
-
-    for y in range(0, symbol_col.height - row_h, row_h):
-        crop = symbol_col.crop((0, y, symbol_col.width, y + row_h))
-        gray = cv2.cvtColor(np.array(crop), cv2.COLOR_BGR2GRAY)
-
-        if gray.mean() < 245:  # ignore empty rows
-            symbols.append(gray)
-
-    return symbols
-
-
-# ================= TEMPLATE MATCH =================
-
-def symbol_exists_on_page(template, page_gray):
-    res = cv2.matchTemplate(page_gray, template, cv2.TM_CCOEFF_NORMED)
-    return np.max(res) >= MATCH_THRESHOLD
-
-
-# ================= MAIN PROCESS =================
-
-def tick_legend_symbols(pdf_bytes):
-    images = convert_from_bytes(pdf_bytes, dpi=300)
-
-    legend_idx = find_legend_page(pdf_bytes)
-    if legend_idx is None:
-        raise ValueError("Legend page not found")
-
-    legend_symbols = extract_legend_symbol_images(images[legend_idx])
-
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    found = [False] * len(legend_symbols)
-
-    for i, page in enumerate(doc):
-        if i == legend_idx:
-            continue
-
-        page_img = images[i]
-        page_gray = cv2.cvtColor(np.array(page_img), cv2.COLOR_BGR2GRAY)
-
-        for idx, tpl in enumerate(legend_symbols):
-            if not found[idx] and symbol_exists_on_page(tpl, page_gray):
-                found[idx] = True
-
-    # Tick legend
-    legend_page = doc[legend_idx]
-    y = 150
-    for idx, is_found in enumerate(found):
-        if is_found:
-            legend_page.insert_text(
-                fitz.Point(300, y + idx * 80),
-                "✔",
-                fontsize=16,
-                color=(0, 0.6, 0),
-            )
-
-    out = io.BytesIO()
-    doc.save(out)
-    doc.close()
-    out.seek(0)
-
-    return out.getvalue(), sum(found), len(found)
-
-
-# ================= STREAMLIT =================
-
-st.set_page_config(layout="wide")
-st.title("🛠 Mechanical Legend Symbol Checker (WORKING)")
-
-uploaded_pdf = st.file_uploader("Upload Mechanical PDF", type=["pdf"])
-
-if uploaded_pdf and st.button("Run"):
+    # Load PDF
+    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+    pdf_file.seek(0)
+    
+    # Convert to Images (200 DPI is good balance)
     try:
-        pdf_bytes = uploaded_pdf.read()
-
-        with st.spinner("Detecting symbols from legend..."):
-            final_pdf, found, total = tick_legend_symbols(pdf_bytes)
-
-        project = uploaded_pdf.name.rsplit(".", 1)[0]
-        out_dir = make_output_dirs(project)
-
-        with open(os.path.join(out_dir, "legend_checked.pdf"), "wb") as f:
-            f.write(final_pdf)
-
-        st.success(f"✅ {found} / {total} symbols detected in plans")
-
-        st.download_button(
-            "Download Result PDF",
-            final_pdf,
-            "legend_checked.pdf",
-            mime="application/pdf",
-        )
-
+        images = convert_from_bytes(pdf_file.read(), dpi=200, poppler_path=POPPLER_BIN_PATH)
     except Exception as e:
-        st.error(str(e))
+        st.error(f"Poppler Error: {e}")
+        return None, []
+
+    extracted_data = []
+    
+    # Regex: Matches AC-1, AC 1, AC - 1
+    tag_pattern = re.compile(r'(AC|CU|EF|HP|AH|CD|RG|SR|SD)\s*[-_ ]\s*(\d+)', re.IGNORECASE)
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for page_num, img in enumerate(images):
+        status_text.text(f"Processing Page {page_num + 1}...")
+        progress_bar.progress((page_num + 1) / len(images))
+
+        # 1. Run OCR
+        ocr_data = pytesseract.image_to_data(img, output_type=Output.DICT)
+        n_boxes = len(ocr_data['text'])
+        
+        # 2. Coordinate Math
+        # We need to map Image Pixels (from OCR) -> PDF Points (for drawing)
+        fitz_page = doc[page_num]
+        
+        # Get dimensions
+        pdf_w, pdf_h = fitz_page.rect.width, fitz_page.rect.height
+        img_w, img_h = img.width, img.height
+        
+        scale_x = pdf_w / img_w
+        scale_y = pdf_h / img_h
+
+        # 3. Find & Mark Tags
+        for i in range(n_boxes):
+            text = ocr_data['text'][i].strip()
+            if not text: continue
+
+            # Check Match
+            match = tag_pattern.match(text)
+            if match:
+                full_tag = f"{match.group(1).upper()}-{match.group(2)}"
+                
+                # OCR Coordinates (Pixels)
+                x, y, w, h = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
+                
+                # Convert to PDF Coordinates
+                # We add a little 'padding' (-2/+4) to make the box frame the text nicely
+                rect_x0 = (x - 2) * scale_x
+                rect_y0 = (y - 2) * scale_y
+                rect_x1 = (x + w + 4) * scale_x
+                rect_y1 = (y + h + 4) * scale_y
+                
+                # --- THE FIX: Use add_rect_annot (Sticker on top) ---
+                rect = fitz.Rect(rect_x0, rect_y0, rect_x1, rect_y1)
+                
+                # Determine Color (Red for Equipment, Cyan for Diffusers)
+                is_dist = full_tag[:2] in ['CD', 'RG', 'SR', 'SD']
+                color = (0, 1, 1) if is_dist else (1, 0, 0) # Cyan or Red
+                
+                annot = fitz_page.add_rect_annot(rect)
+                annot.set_border(width=2)
+                annot.set_colors(stroke=color) # Border color
+                annot.update()
+
+                extracted_data.append({
+                    "Page": page_num + 1,
+                    "Tag": full_tag,
+                    "Detected Text": text,
+                    "X": round(rect_x0, 2),
+                    "Y": round(rect_y0, 2)
+                })
+
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Save Result
+    out_pdf = io.BytesIO()
+    doc.save(out_pdf)
+    out_pdf.seek(0)
+    
+    return out_pdf, extracted_data
+
+# --- APP UI ---
+st.set_page_config(page_title="OCR Tag Scanner")
+st.title("📷 OCR Mechanical Scanner (Visible Boxes)")
+
+uploaded_file = st.file_uploader("Upload Scanned PDF", type="pdf")
+
+if uploaded_file:
+    # --- CHECK POPPLER CONFIG ---
+    if "path" in POPPLER_BIN_PATH:
+        st.error("⚠️ You forgot to update the POPPLER_BIN_PATH in the code code!")
+        st.stop()
+        
+    pdf_out, data = ocr_and_mark(uploaded_file)
+    
+    if data:
+        st.success(f"✅ Found and Marked {len(data)} tags.")
+        
+        # Display Data
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+        
+        # Downloads
+        col1, col2 = st.columns(2)
+        
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+            
+        col1.download_button("📥 Download Excel", excel_buffer.getvalue(), "tags.xlsx")
+        col2.download_button("🖍️ Download Marked PDF", pdf_out, "marked_plans.pdf", "application/pdf")
+    else:
+        st.warning("OCR finished but found no tags matching 'AC-X', 'EF-X', etc.")
