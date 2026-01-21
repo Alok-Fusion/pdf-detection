@@ -1,286 +1,197 @@
 import io
 import re
 import json
-from collections import defaultdict
+import zipfile
 
 import streamlit as st
 import pdfplumber
 import fitz  # PyMuPDF
+import pandas as pd
 
 
-# --------- UTILITIES ---------
+# --------- PAGE CONFIG ---------
+st.set_page_config(layout="wide")
 
+
+# --------- REGEX ---------
 MARK_REGEX = re.compile(r'^[A-Z]{1,4}-\d+', re.IGNORECASE)
 
 
+# --------- CORE LOGIC ---------
+
 def extract_schedules_and_marks(pdf_bytes: bytes):
-    """
-    Extract schedule-like tables and marks from a PDF.
-    Returns:
-      schedule_json: dict with tables
-      marks: sorted list of unique mark strings (e.g., 'FCU-1')
-    """
-    schedule_tables = []
     marks_set = set()
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page_index, page in enumerate(pdf.pages):
+        for page in pdf.pages:
             text = (page.extract_text() or "")
-            text_upper = text.upper()
-
-            # Heuristic: pages with "SCHEDULE"
-            if "SCHEDULE" not in text_upper:
+            if "SCHEDULE" not in text.upper():
                 continue
 
-            tables = page.extract_tables()
-            for t_index, table in enumerate(tables or []):
-                if not table:
-                    continue
-
-                # Clean table rows
-                cleaned = [
-                    [("" if c is None else str(c).strip()) for c in row]
-                    for row in table
-                ]
-
-                # Skip completely empty tables
-                if all(all(cell == "" for cell in row) for row in cleaned):
-                    continue
-
-                # Guess header row: first row with at least one non-empty cell
-                header_row_idx = None
-                for i, row in enumerate(cleaned):
-                    if any(cell != "" for cell in row):
-                        header_row_idx = i
-                        break
-
-                if header_row_idx is None:
-                    continue
-
-                header = cleaned[header_row_idx]
-                data_rows = [
-                    row for row in cleaned[header_row_idx + 1 :]
-                    if any(cell != "" for cell in row)
-                ]
-
-                if not data_rows:
-                    continue
-
-                # Build table dict
-                header_safe = [
-                    col if col else f"COL_{idx+1}" for idx, col in enumerate(header)
-                ]
-
-                dict_rows = []
-                for row in data_rows:
-                    row_dict = {}
-                    for col_idx, col_name in enumerate(header_safe):
-                        value = row[col_idx] if col_idx < len(row) else ""
-                        row_dict[col_name] = value
-                    dict_rows.append(row_dict)
-
-                schedule_tables.append(
-                    {
-                        "page_index": page_index,
-                        "table_index_on_page": t_index,
-                        "header": header_safe,
-                        "rows": dict_rows,
-                    }
-                )
-
-                # --- Extract marks via regex on each cell ---
-                for row in data_rows:
+            for table in page.extract_tables() or []:
+                for row in table:
                     for cell in row:
-                        if not cell:
-                            continue
-                        m = MARK_REGEX.match(cell)
-                        if m:
-                            # Normalize to upper-case + standard hyphen
-                            marks_set.add(m.group(0).upper())
+                        if cell:
+                            m = MARK_REGEX.match(str(cell).strip())
+                            if m:
+                                marks_set.add(m.group(0).upper())
 
-    schedule_json = {
-        "schedule_tables": schedule_tables,
-        "marks": sorted(marks_set),
-    }
-    return schedule_json, sorted(marks_set)
+    return sorted(marks_set)
 
 
 def mark_type(mark: str) -> str:
-    """
-    Get type prefix from a mark, e.g. 'FCU-1' -> 'FCU'.
-    """
-    m = re.match(r'^([A-Z]{1,4})', mark, re.IGNORECASE)
-    if m:
-        return m.group(1).upper()
-    if '-' in mark:
-        return mark.split('-')[0].upper()
-    return mark.upper()
+    m = re.match(r'^([A-Z]{1,4})', mark)
+    return m.group(1).upper() if m else mark.split("-")[0].upper()
 
 
-def get_plan_label(page: fitz.Page) -> str | None:
-    """
-    Find a 'plan label' on a page, e.g. 'MECHANICAL FLOOR PLAN'.
-    """
-    text = page.get_text() or ""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    plan_lines = [l for l in lines if "PLAN" in l.upper()]
-    if not plan_lines:
-        return None
-
-    # Prefer lines with 'MECHANICAL' or 'FLOOR/ROOF'
-    preferred = [l for l in plan_lines if "MECHANICAL" in l.upper()]
-    if preferred:
-        return preferred[0]
-    for key in ("FLOOR PLAN", "ROOF PLAN", "PIPING PLAN", "DETECTION PLAN"):
-        for l in plan_lines:
-            if key in l.upper():
-                return l
-    return plan_lines[0]
+def get_plan_label(page: fitz.Page):
+    lines = [l.strip() for l in (page.get_text() or "").splitlines() if l.strip()]
+    plans = [l for l in lines if "PLAN" in l.upper()]
+    return plans[0] if plans else None
 
 
-def build_type_color_map(types: list[str]):
-    """
-    Assign a distinct RGB color (0-1) per mark type.
-    """
+def build_type_color_map(types):
     palette = [
-        (1, 0, 0),        # red
-        (0, 0, 1),        # blue
-        (0, 0.6, 0),      # green
-        (1, 0.5, 0),      # orange
-        (0.6, 0, 0.6),    # purple
-        (0, 0.7, 0.7),    # teal
-        (0.7, 0.7, 0),    # yellow-ish
-        (0.5, 0.3, 0.1),  # brown
-        (0, 0, 0.5),      # dark blue
-        (0, 0.5, 0.3),    # dark green
-        (0.5, 0.5, 0.5),  # gray
+        (1, 0, 0), (0, 0, 1), (0, 0.6, 0),
+        (1, 0.5, 0), (0.6, 0, 0.6),
+        (0, 0.7, 0.7), (0.7, 0.7, 0),
     ]
-    type_color_map = {}
-    for idx, t in enumerate(sorted(set(types))):
-        type_color_map[t] = palette[idx % len(palette)]
-    return type_color_map
+    return {t: palette[i % len(palette)] for i, t in enumerate(sorted(set(types)))}
 
 
-def highlight_pdf(pdf_bytes: bytes, marks: list[str]):
-    """
-    Highlight all marks in the PDF, color-coded by type.
-    Returns:
-      highlighted_pdf_bytes,
-      plan_mark_counts,
-      plan_type_counts,
-      type_color_map
-    """
+def highlight_pdf_and_collect(pdf_bytes, marks, file_name):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    type_color_map = build_type_color_map([mark_type(m) for m in marks])
 
-    types = [mark_type(m) for m in marks]
-    type_color_map = build_type_color_map(types)
+    rows = []
 
-    plan_mark_counts = defaultdict(lambda: defaultdict(int))
-    plan_type_counts = defaultdict(lambda: defaultdict(int))
-
-    for page in doc:
+    for page_index, page in enumerate(doc):
         plan_label = get_plan_label(page)
-        # We'll still highlight on non-plan pages, but only count on plan pages
 
         for mark in marks:
-            if not mark:
-                continue
+            m_type = mark_type(mark)
+            color = type_color_map[m_type]
 
-            t = mark_type(mark)
-            color = type_color_map.get(t, (1, 1, 0))
-
-            # Try a couple of search variants
-            variants = {
-                mark,
-                mark.replace("-", " "),   # FCU 1
-                mark.replace("-", ""),    # FCU1
-            }
-
+            variants = {mark, mark.replace("-", " "), mark.replace("-", "")}
             rects = []
             for v in variants:
-                rects += page.search_for(v, quads=False)
+                rects += page.search_for(v)
 
+            rects = list(set(rects))
             if not rects:
-                # Here is where you could add OCR fallback:
-                #   - render page to image
-                #   - run pytesseract
-                #   - find approximate positions
-                # For now we just skip.
                 continue
 
-            # Deduplicate overlapping rects
-            unique_rects = []
             for r in rects:
-                if not any(r == u for u in unique_rects):
-                    unique_rects.append(r)
-
-            for r in unique_rects:
                 annot = page.add_highlight_annot(r)
                 annot.set_colors(stroke=color)
                 annot.update()
 
-            if plan_label:
-                plan_mark_counts[plan_label][mark] += len(unique_rects)
-                plan_type_counts[plan_label][t] += len(unique_rects)
+            rows.append({
+                "file_name": file_name,
+                "plan_label": plan_label,
+                "page_number": page_index + 1,
+                "mark": mark,
+                "mark_type": m_type,
+                "count_on_page": len(rects),
+                "color_r": color[0],
+                "color_g": color[1],
+                "color_b": color[2],
+            })
 
-    out_buf = io.BytesIO()
-    doc.save(out_buf)
+    buf = io.BytesIO()
+    doc.save(buf)
     doc.close()
-    out_buf.seek(0)
+    buf.seek(0)
 
-    # Convert counts to plain dicts
-    plan_mark_counts = {p: dict(m) for p, m in plan_mark_counts.items()}
-    plan_type_counts = {p: dict(m) for p, m in plan_type_counts.items()}
-
-    return out_buf.getvalue(), plan_mark_counts, plan_type_counts, type_color_map
+    return buf.getvalue(), pd.DataFrame(rows)
 
 
 # --------- STREAMLIT UI ---------
 
-st.title("Mechanical Schedules → Mark Highlighter")
-
-st.write(
-    "Upload a mechanical PDF set (with schedule + plan sheets). "
-    "The app will extract **marks** from schedules, highlight them on all pages, "
-    "and show counts by plan and by mark type."
-)
+st.title("Mechanical PDF → CSV + JSON Viewer")
 
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
-if uploaded_file is not None:
-    pdf_bytes = uploaded_file.read()
+if "processed" not in st.session_state:
+    st.session_state.processed = False
 
-    with st.spinner("Extracting schedules and marks..."):
-        schedule_json, marks = extract_schedules_and_marks(pdf_bytes)
 
-    st.subheader("Detected Marks")
-    if marks:
-        st.code(", ".join(marks), language="text")
-    else:
-        st.warning("No marks detected in schedule pages.")
+if uploaded_file and not st.session_state.processed:
+    with st.spinner("Processing PDF (one-time)..."):
+        pdf_bytes = uploaded_file.read()
+        marks = extract_schedules_and_marks(pdf_bytes)
 
-    st.subheader("Schedule JSON (preview)")
-    st.code(json.dumps(schedule_json, indent=2)[:4000] + "\n...", language="json")
+        if not marks:
+            st.error("No marks detected.")
+            st.stop()
 
-    if marks:
-        with st.spinner("Highlighting marks in PDF..."):
-            highlighted_bytes, plan_mark_counts, plan_type_counts, type_color_map = highlight_pdf(
-                pdf_bytes, marks
-            )
-
-        st.subheader("Download Highlighted PDF")
-        st.download_button(
-            label="Download highlighted PDF",
-            data=highlighted_bytes,
-            file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_highlighted.pdf",
-            mime="application/pdf",
+        highlighted_pdf, master_df = highlight_pdf_and_collect(
+            pdf_bytes, marks, uploaded_file.name
         )
 
-        st.subheader("Counts per Plan (by mark)")
-        st.json(plan_mark_counts)
+        # ---- JSON STRUCTURE ----
+        master_json = {
+            "file_name": uploaded_file.name,
+            "records": [
+                {
+                    "plan_label": row.plan_label,
+                    "page_number": int(row.page_number),
+                    "mark": row.mark,
+                    "mark_type": row.mark_type,
+                    "count_on_page": int(row.count_on_page),
+                    "color": {
+                        "r": row.color_r,
+                        "g": row.color_g,
+                        "b": row.color_b,
+                    },
+                }
+                for row in master_df.itertuples(index=False)
+            ],
+        }
 
-        st.subheader("Counts per Plan (by type)")
-        st.json(plan_type_counts)
+        st.session_state.master_df = master_df
+        st.session_state.master_json = master_json
+        st.session_state.highlighted_pdf = highlighted_pdf
+        st.session_state.original_pdf = pdf_bytes
+        st.session_state.file_name = uploaded_file.name
+        st.session_state.processed = True
 
-        st.subheader("Type → Color map")
-        st.json(type_color_map)
+
+# --------- DISPLAY ---------
+
+if st.session_state.processed:
+    st.subheader("📊 Extracted Data (Table)")
+    st.dataframe(
+        st.session_state.master_df,
+        use_container_width=True,
+        height=450,
+    )
+
+    st.subheader("🧾 Extracted Data (JSON)")
+    st.json(st.session_state.master_json)
+
+    # --------- EXPORT ---------
+
+    csv_bytes = st.session_state.master_df.to_csv(index=False).encode("utf-8")
+    json_bytes = json.dumps(
+        st.session_state.master_json, indent=2
+    ).encode("utf-8")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        zipf.writestr(f"input/{st.session_state.file_name}", st.session_state.original_pdf)
+        zipf.writestr(
+            f"output/{st.session_state.file_name.rsplit('.',1)[0]}_highlighted.pdf",
+            st.session_state.highlighted_pdf
+        )
+        zipf.writestr("data/master_data.csv", csv_bytes)
+        zipf.writestr("data/master_data.json", json_bytes)
+
+    zip_buffer.seek(0)
+
+    st.download_button(
+        "⬇️ Download ZIP (CSV + JSON + PDFs)",
+        data=zip_buffer.getvalue(),
+        file_name=f"{st.session_state.file_name.rsplit('.',1)[0]}_results.zip",
+        mime="application/zip",
+    )
