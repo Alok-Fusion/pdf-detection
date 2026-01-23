@@ -1,137 +1,254 @@
-import streamlit as st
-import fitz  # PyMuPDF
-import pytesseract
-from pdf2image import convert_from_bytes
-import pandas as pd
 import io
 import re
+import json
+import zipfile
 
-# --- CONFIGURATION ---
-# UPDATE THIS PATH to your local Poppler bin folder
-POPPLER_BIN_PATH = r"C:/poppler-25.12.0/Library/bin"
+import streamlit as st
+import pdfplumber
+import fitz  # PyMuPDF
+import pandas as pd
 
-def smart_scan_and_highlight(pdf_bytes):
+import pytesseract
+from PIL import Image
+
+
+# --------- PAGE CONFIG ---------
+st.set_page_config(layout="wide")
+
+
+# --------- REGEX ---------
+MARK_REGEX = re.compile(r'\b[A-Z]{1,4}-\d+\b', re.IGNORECASE)
+
+
+# --------- TEXT UTILITIES ---------
+
+def normalize_text(text: str) -> str:
+    return text.replace("—", "-").replace("–", "-")
+
+
+def extract_marks_from_text(text: str, marks_set: set):
+    text = normalize_text(text)
+    for m in MARK_REGEX.findall(text):
+        marks_set.add(m.upper())
+
+
+# ======================================================
+# OCR LAYER (MAKES PDF FULLY SEARCHABLE)
+# ======================================================
+
+def ocr_pdf(pdf_bytes: bytes, dpi=250) -> bytes:
     """
-    1. Converts PDF to High-Res Images (300 DPI for accuracy).
-    2. Uses OCR to read text.
-    3. Uses 'Fuzzy Regex' to find tags like AC-1, AC 1, AC- 1.
+    Memory-safe OCR for large mechanical / architectural PDFs.
+    Uses Tesseract to generate searchable PDF pages directly.
     """
-    try:
-        # 300 DPI is critical for reading small blueprint text
-        images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPPLER_BIN_PATH)
-    except Exception as e:
-        st.error(f"Poppler Error: {e}")
-        return None, []
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = fitz.open()
 
-    pdf_writer = fitz.open()
-    found_tags_log = []
-    
-    # REGEX PATTERN EXPLAINED:
-    # \b          -> Start of word
-    # ([A-Z]{1,4})-> 1 to 4 Letters (Type: AC, EF, CU)
-    # \s* -> Optional space
-    # [-‐‑_]?     -> Optional dash/underscore
-    # \s* -> Optional space
-    # (\d+)       -> Numbers
-    # \b          -> End of word
-    # Matches: "AC-1", "AC 1", "AC - 1", "EF10"
-    pattern = re.compile(r'\b([A-Z]{1,4})\s*[-‐‑_]?\s*(\d+)\b')
+    for page_index, page in enumerate(src):
+        # Render page (lower DPI to avoid memory blowup)
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
 
-    progress_bar = st.progress(0)
-    status = st.empty()
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-    for i, img in enumerate(images):
-        status.text(f"Scanning Page {i+1}/{len(images)}...")
-        progress_bar.progress((i + 1) / len(images))
+        # Let Tesseract generate a searchable PDF page
+        pdf_bytes_ocr = pytesseract.image_to_pdf_or_hocr(
+            img, extension="pdf"
+        )
 
-        # 1. OCR (Get text + coordinates)
-        try:
-            # We get a searchable PDF page directly from Tesseract
-            pdf_page_bytes = pytesseract.image_to_pdf_or_hocr(img, extension='pdf')
-            page_doc = fitz.open("pdf", pdf_page_bytes)
-            page = page_doc[0]
-        except Exception as e:
-            st.warning(f"OCR failed on page {i+1}: {e}")
-            continue
+        ocr_page = fitz.open(stream=pdf_bytes_ocr, filetype="pdf")
+        out.insert_pdf(ocr_page)
 
-        # 2. Find and Highlight
-        # Get all text words to analyze
-        text_on_page = page.get_text("text")
-        
-        # Find all matches in the text
-        matches = pattern.finditer(text_on_page)
-        
-        # Use a set to avoid highlighting the same spot twice
-        unique_locs = set()
+        # Explicit cleanup (important!)
+        pix = None
+        img = None
+        ocr_page.close()
 
-        for match in matches:
-            raw_str = match.group(0) # e.g. "AC - 1"
-            tag_type = match.group(1).upper()
-            tag_num = match.group(2)
-            clean_tag = f"{tag_type}-{tag_num}"
+    buf = io.BytesIO()
+    out.save(buf)
+    out.close()
+    src.close()
 
-            # Filter: Ignore unlikely tags (e.g., "AT-1" or "IN-2") to reduce noise
-            # You can add valid mechanical codes here
-            valid_codes = ["AC", "CU", "EF", "HP", "CD", "RG", "SR", "SD", "AH", "VAV", "FCU"]
-            if tag_type not in valid_codes:
+    buf.seek(0)
+    return buf.getvalue()
+
+# ======================================================
+# CORE LOGIC (UNCHANGED)
+# ======================================================
+
+def extract_schedules_and_marks(pdf_bytes: bytes):
+    marks_set = set()
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = normalize_text(page.extract_text() or "")
+            extract_marks_from_text(text, marks_set)
+
+            for table in page.extract_tables() or []:
+                for row in table:
+                    for cell in row:
+                        if cell:
+                            extract_marks_from_text(str(cell), marks_set)
+
+    return sorted(marks_set)
+
+
+def mark_type(mark: str) -> str:
+    m = re.match(r'^([A-Z]{1,4})', mark)
+    return m.group(1).upper() if m else mark.split("-")[0].upper()
+
+
+def get_plan_label(page: fitz.Page):
+    lines = [l.strip() for l in (page.get_text() or "").splitlines() if l.strip()]
+    plans = [l for l in lines if "PLAN" in l.upper()]
+    return plans[0] if plans else None
+
+
+def build_type_color_map(types):
+    palette = [
+        (1, 0, 0), (0, 0, 1), (0, 0.6, 0),
+        (1, 0.5, 0), (0.6, 0, 0.6),
+        (0, 0.7, 0.7), (0.7, 0.7, 0),
+    ]
+    return {t: palette[i % len(palette)] for i, t in enumerate(sorted(set(types)))}
+
+
+def highlight_pdf_and_collect(pdf_bytes, marks, file_name):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    type_color_map = build_type_color_map([mark_type(m) for m in marks])
+
+    rows = []
+
+    for page_index, page in enumerate(doc):
+        plan_label = get_plan_label(page)
+
+        for mark in marks:
+            m_type = mark_type(mark)
+            color = type_color_map[m_type]
+
+            variants = {
+                mark,
+                mark.replace("-", " "),
+                mark.replace("-", ""),
+            }
+
+            rects = []
+            for v in variants:
+                rects += page.search_for(v)
+
+            rects = list(set(rects))
+            if not rects:
                 continue
 
-            # Search for the *raw string* to get coordinates
-            instances = page.search_for(raw_str)
-
-            for inst in instances:
-                # Coordinate Key (rounded)
-                loc_key = (round(inst.x0), round(inst.y0))
-                if loc_key in unique_locs:
-                    continue
-                unique_locs.add(loc_key)
-
-                # Highlight Color
-                # Cyan for Air Distribution, Yellow for Equipment
-                is_dist = tag_type in ['CD', 'RG', 'SR', 'SD']
-                color = (0, 1, 1) if is_dist else (1, 1, 0)
-
-                annot = page.add_highlight_annot(inst)
+            for r in rects:
+                annot = page.add_highlight_annot(r)
                 annot.set_colors(stroke=color)
                 annot.update()
 
-                found_tags_log.append({
-                    "Page": i + 1,
-                    "Tag": clean_tag,
-                    "Detected": raw_str
-                })
+            rows.append({
+                "file_name": file_name,
+                "plan_label": plan_label,
+                "page_number": page_index + 1,
+                "mark": mark,
+                "mark_type": m_type,
+                "count_on_page": len(rects),
+                "color_r": color[0],
+                "color_g": color[1],
+                "color_b": color[2],
+            })
 
-        pdf_writer.insert_pdf(page_doc)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    buf.seek(0)
 
-    progress_bar.empty()
-    status.empty()
-    
-    out_buffer = io.BytesIO()
-    pdf_writer.save(out_buffer)
-    out_buffer.seek(0)
-    
-    return out_buffer.getvalue(), found_tags_log
+    return buf.getvalue(), pd.DataFrame(rows)
 
-# --- UI ---
-st.set_page_config(page_title="Precision Tagger")
-st.title("🎯 Precision Mechanical Tagger")
-st.markdown("Uses **High-Res OCR** + **Smart Pattern Matching** (No AI hallucinations).")
+
+# ======================================================
+# STREAMLIT UI
+# ======================================================
+
+st.title("Mechanical PDF → Searchable → CSV + JSON")
 
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
-if uploaded_file:
-    if "path" in POPPLER_BIN_PATH:
-         st.error("⚠️ Please update POPPLER_BIN_PATH in the code!")
-         st.stop()
-         
-    with st.spinner("Processing..."):
-        final_pdf, log = smart_scan_and_highlight(uploaded_file.read())
-        
-    if log:
-        st.success(f"Found {len(log)} tags!")
-        df = pd.DataFrame(log)
-        st.dataframe(df.head(10), use_container_width=True)
-        
-        st.download_button("📥 Download Highlighted PDF", final_pdf, "marked.pdf", "application/pdf")
-    else:
-        st.warning("No tags found. Check if your Poppler path is correct.")
+if "processed" not in st.session_state:
+    st.session_state.processed = False
+
+
+if uploaded_file and not st.session_state.processed:
+    with st.spinner("🔍 Running OCR to make PDF searchable..."):
+        original_pdf = uploaded_file.read()
+        searchable_pdf = ocr_pdf(original_pdf)
+
+    with st.spinner("📊 Extracting marks & highlighting..."):
+        marks = extract_schedules_and_marks(searchable_pdf)
+
+        if not marks:
+            st.error("No marks detected even after OCR.")
+            st.stop()
+
+        highlighted_pdf, master_df = highlight_pdf_and_collect(
+            searchable_pdf, marks, uploaded_file.name
+        )
+
+        master_json = {
+            "file_name": uploaded_file.name,
+            "records": [
+                {
+                    "plan_label": row.plan_label,
+                    "page_number": int(row.page_number),
+                    "mark": row.mark,
+                    "mark_type": row.mark_type,
+                    "count_on_page": int(row.count_on_page),
+                    "color": {
+                        "r": row.color_r,
+                        "g": row.color_g,
+                        "b": row.color_b,
+                    },
+                }
+                for row in master_df.itertuples(index=False)
+            ],
+        }
+
+        st.session_state.master_df = master_df
+        st.session_state.master_json = master_json
+        st.session_state.highlighted_pdf = highlighted_pdf
+        st.session_state.original_pdf = original_pdf
+        st.session_state.file_name = uploaded_file.name
+        st.session_state.processed = True
+
+
+# ======================================================
+# OUTPUT
+# ======================================================
+
+if st.session_state.processed:
+    st.subheader("📊 Extracted Data")
+    st.dataframe(st.session_state.master_df, use_container_width=True, height=450)
+
+    st.subheader("🧾 JSON Output")
+    st.json(st.session_state.master_json)
+
+    csv_bytes = st.session_state.master_df.to_csv(index=False).encode("utf-8")
+    json_bytes = json.dumps(st.session_state.master_json, indent=2).encode("utf-8")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        zipf.writestr(f"input/{st.session_state.file_name}", st.session_state.original_pdf)
+        zipf.writestr(
+            f"output/{st.session_state.file_name.rsplit('.',1)[0]}_highlighted.pdf",
+            st.session_state.highlighted_pdf
+        )
+        zipf.writestr("data/master_data.csv", csv_bytes)
+        zipf.writestr("data/master_data.json", json_bytes)
+
+    zip_buffer.seek(0)
+
+    st.download_button(
+        "⬇️ Download ZIP (PDF + CSV + JSON)",
+        data=zip_buffer.getvalue(),
+        file_name=f"{st.session_state.file_name.rsplit('.',1)[0]}_results.zip",
+        mime="application/zip",
+    )

@@ -193,5 +193,5 @@ if st.session_state.processed:
         "⬇️ Download ZIP (CSV + JSON + PDFs)",
         data=zip_buffer.getvalue(),
         file_name=f"{st.session_state.file_name.rsplit('.',1)[0]}_results.zip",
-        mime="application/zip",
+        mime="application/zip"
     )
