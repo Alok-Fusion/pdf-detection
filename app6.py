@@ -8,7 +8,7 @@ import re
 
 # --- CONFIGURATION ---
 # UPDATE THIS PATH to your Poppler bin folder
-POPPLER_BIN_PATH = r"C:/poppler-25.12.0/Library/bin" 
+POPPLER_BIN_PATH = r"C:/Alok/poppler-25.12.0/Library/bin"
 
 def is_mechanical_page(text):
     """

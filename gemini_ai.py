@@ -8,7 +8,7 @@ import requests
 import base64
 
 # --- CONFIGURATION ---
-POPPLER_BIN_PATH = r"C:/poppler-25.12.0/Library/bin"
+POPPLER_BIN_PATH = r"C:/Alok/poppler-25.12.0/Library/bin"
 
 def call_gemini_direct(image_bytes, api_key):
     """

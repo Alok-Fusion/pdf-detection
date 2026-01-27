@@ -9,7 +9,7 @@ import re
 
 # --- CONFIGURATION ---
 # 1. Update this to your Poppler bin path
-POPPLER_BIN_PATH = r"C:/poppler-25.12.0/Library/bin" 
+POPPLER_BIN_PATH = r"C:/Alok/poppler-25.12.0/Library/bin"
 
 def ocr_and_mark(pdf_file):
     """

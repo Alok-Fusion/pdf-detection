@@ -10,7 +10,7 @@ from collections import defaultdict
 
 # --- CONFIGURATION ---
 # UPDATE THIS PATH to your Poppler bin folder
-POPPLER_BIN_PATH = r"C:/poppler-25.12.0/Library/bin" 
+POPPLER_BIN_PATH = r"C:/Alok/poppler-25.12.0/Library/bin"
 
 # --- 1. OCR ENGINE ---
 def create_searchable_pdf(pdf_bytes):
