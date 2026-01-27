@@ -8,33 +8,87 @@ import pdfplumber
 import fitz  # PyMuPDF
 import pandas as pd
 
+import pytesseract
+from PIL import Image
+
 
 # --------- PAGE CONFIG ---------
 st.set_page_config(layout="wide")
 
 
 # --------- REGEX ---------
-MARK_REGEX = re.compile(r'^[A-Z]{1,4}-\d+', re.IGNORECASE)
+MARK_REGEX = re.compile(r'\b[A-Z]{1,4}-\d+\b', re.IGNORECASE)
 
 
-# --------- CORE LOGIC ---------
+# --------- TEXT UTILITIES ---------
+
+def normalize_text(text: str) -> str:
+    return text.replace("—", "-").replace("–", "-")
+
+
+def extract_marks_from_text(text: str, marks_set: set):
+    text = normalize_text(text)
+    for m in MARK_REGEX.findall(text):
+        marks_set.add(m.upper())
+
+
+# ======================================================
+# OCR LAYER (MAKES PDF FULLY SEARCHABLE)
+# ======================================================
+
+def ocr_pdf(pdf_bytes: bytes, dpi=400) -> bytes:
+    """
+    Memory-safe OCR for large mechanical / architectural PDFs.
+    Uses Tesseract to generate searchable PDF pages directly.
+    """
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = fitz.open()
+
+    for page_index, page in enumerate(src):
+        # Render page (lower DPI to avoid memory blowup)
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        # Let Tesseract generate a searchable PDF page
+        pdf_bytes_ocr = pytesseract.image_to_pdf_or_hocr(
+            img, extension="pdf"
+        )
+
+        ocr_page = fitz.open(stream=pdf_bytes_ocr, filetype="pdf")
+        out.insert_pdf(ocr_page)
+
+        # Explicit cleanup (important!)
+        pix = None
+        img = None
+        ocr_page.close()
+
+    buf = io.BytesIO()
+    out.save(buf)
+    out.close()
+    src.close()
+
+    buf.seek(0)
+    return buf.getvalue()
+
+# ======================================================
+# CORE LOGIC (UNCHANGED)
+# ======================================================
 
 def extract_schedules_and_marks(pdf_bytes: bytes):
     marks_set = set()
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            text = (page.extract_text() or "")
-            if "SCHEDULE" not in text.upper():
-                continue
+            text = normalize_text(page.extract_text() or "")
+            extract_marks_from_text(text, marks_set)
 
             for table in page.extract_tables() or []:
                 for row in table:
                     for cell in row:
                         if cell:
-                            m = MARK_REGEX.match(str(cell).strip())
-                            if m:
-                                marks_set.add(m.group(0).upper())
+                            extract_marks_from_text(str(cell), marks_set)
 
     return sorted(marks_set)
 
@@ -72,7 +126,12 @@ def highlight_pdf_and_collect(pdf_bytes, marks, file_name):
             m_type = mark_type(mark)
             color = type_color_map[m_type]
 
-            variants = {mark, mark.replace("-", " "), mark.replace("-", "")}
+            variants = {
+                mark,
+                mark.replace("-", " "),
+                mark.replace("-", ""),
+            }
+
             rects = []
             for v in variants:
                 rects += page.search_for(v)
@@ -106,9 +165,11 @@ def highlight_pdf_and_collect(pdf_bytes, marks, file_name):
     return buf.getvalue(), pd.DataFrame(rows)
 
 
-# --------- STREAMLIT UI ---------
+# ======================================================
+# STREAMLIT UI
+# ======================================================
 
-st.title("Mechanical PDF → CSV + JSON Viewer")
+st.title("Mechanical PDF → Searchable → CSV + JSON")
 
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
@@ -117,19 +178,21 @@ if "processed" not in st.session_state:
 
 
 if uploaded_file and not st.session_state.processed:
-    with st.spinner("Processing PDF (one-time)..."):
-        pdf_bytes = uploaded_file.read()
-        marks = extract_schedules_and_marks(pdf_bytes)
+    with st.spinner("🔍 Running OCR to make PDF searchable..."):
+        original_pdf = uploaded_file.read()
+        searchable_pdf = ocr_pdf(original_pdf)
+
+    with st.spinner("📊 Extracting marks & highlighting..."):
+        marks = extract_schedules_and_marks(searchable_pdf)
 
         if not marks:
-            st.error("No marks detected.")
+            st.error("No marks detected even after OCR.")
             st.stop()
 
         highlighted_pdf, master_df = highlight_pdf_and_collect(
-            pdf_bytes, marks, uploaded_file.name
+            searchable_pdf, marks, uploaded_file.name
         )
 
-        # ---- JSON STRUCTURE ----
         master_json = {
             "file_name": uploaded_file.name,
             "records": [
@@ -152,30 +215,24 @@ if uploaded_file and not st.session_state.processed:
         st.session_state.master_df = master_df
         st.session_state.master_json = master_json
         st.session_state.highlighted_pdf = highlighted_pdf
-        st.session_state.original_pdf = pdf_bytes
+        st.session_state.original_pdf = original_pdf
         st.session_state.file_name = uploaded_file.name
         st.session_state.processed = True
 
 
-# --------- DISPLAY ---------
+# ======================================================
+# OUTPUT
+# ======================================================
 
 if st.session_state.processed:
-    st.subheader("📊 Extracted Data (Table)")
-    st.dataframe(
-        st.session_state.master_df,
-        use_container_width=True,
-        height=450,
-    )
+    st.subheader("📊 Extracted Data")
+    st.dataframe(st.session_state.master_df, use_container_width=True, height=450)
 
-    st.subheader("🧾 Extracted Data (JSON)")
+    st.subheader("🧾 JSON Output")
     st.json(st.session_state.master_json)
 
-    # --------- EXPORT ---------
-
     csv_bytes = st.session_state.master_df.to_csv(index=False).encode("utf-8")
-    json_bytes = json.dumps(
-        st.session_state.master_json, indent=2
-    ).encode("utf-8")
+    json_bytes = json.dumps(st.session_state.master_json, indent=2).encode("utf-8")
 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -190,8 +247,8 @@ if st.session_state.processed:
     zip_buffer.seek(0)
 
     st.download_button(
-        "⬇️ Download ZIP (CSV + JSON + PDFs)",
+        "⬇️ Download ZIP (PDF + CSV + JSON)",
         data=zip_buffer.getvalue(),
         file_name=f"{st.session_state.file_name.rsplit('.',1)[0]}_results.zip",
-        mime="application/zip"
+        mime="application/zip",
     )
