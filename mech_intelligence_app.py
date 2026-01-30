@@ -374,7 +374,7 @@ if uploaded:
 
     legends = extract_legends("temp.pdf")
     pages = find_mechanical_pages("temp.pdf")
-    images = convert_from_path("temp.pdf", dpi=300)
+    images = convert_from_path("temp.pdf", dpi=400)
 
     items = []
     highlighted = []
