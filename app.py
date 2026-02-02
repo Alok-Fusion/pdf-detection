@@ -11,7 +11,7 @@ import pandas as pd
 import pytesseract
 from PIL import Image
 
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+#pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # --------- PAGE CONFIG ---------
 st.set_page_config(layout="wide")
