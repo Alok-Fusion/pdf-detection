@@ -3,3 +3,6 @@ pdfplumber
 pymupdf
 pillow
 pytesseract
+opencv-python
+pdf2image
+numpy
