@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 from pdf2image import convert_from_path
 
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+# Tesseract path is auto-detected on Streamlit Cloud (installed via packages.txt)
 
 # --------- PAGE CONFIG ---------
 st.set_page_config(layout="wide")
