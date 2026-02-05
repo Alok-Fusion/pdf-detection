@@ -462,7 +462,12 @@ else:
 if "processed" not in st.session_state:
     st.session_state.processed = False
 
-if uploaded_file and not st.session_state.processed:
+# Show Process button when file is uploaded
+process_button = False
+if uploaded_file:
+    process_button = st.button("🚀 Process", type="primary", use_container_width=True)
+
+if uploaded_file and process_button and not st.session_state.processed:
     
     # Read original PDF
     original_pdf = uploaded_file.read()
